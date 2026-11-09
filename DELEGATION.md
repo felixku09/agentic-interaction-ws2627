@@ -8,8 +8,8 @@
 | 6 | Termin verschieben | approval | Andere Personen könnten betroffen sein, außerdem können Termine auch verwechselt werden |
 | 7 | Zugticket buchen | approval | Zugriff auf Geld von mir, evtl kostet das Ticket mehr als ich zahlen möchte |
 | 8 | Nachricht an Dritte senden | approval | Empfänger der Nachricht sollten erst klar definiert sein sodass man selber nochnmal kontrollieren kann, nicht dass falsche daten an fremde kommen |
-| 9 | Notiz erstellen | approval | Da er sonst die Notizen mit teileise unnötigen Notizen befüllt, sodass es unübersichtlich wird |
-| 10 | Notiz löschen | approval | Evtl. sind veraltete notizen noch wichtig für mich, obwohl sie nicht wichtig erscheinen |
+| 9 | Notiz erstellen | approval | Da er sonst die Notizen mit teilweise unnötigen Notizen befüllt, sodass es unübersichtlich wird |
+| 10 | Notiz löschen | approval | Evtl. sind veraltete Notizen noch wichtig für mich, obwohl sie nicht wichtig erscheinen |
 
 Donnerstag, 29. Oktober 2026, 7:20 Uhr morgens, zu Hause in Ulm
 
@@ -64,7 +64,7 @@ Rückfrage war unnötig: \
 E: frage ob er ihnen eine nachricht senden soll \
 F: Doppelte Nachfrage ob er sie löschen soll, obwohl bereits bestätigt
 
-Fehlende Informationen:\ 
+Fehlende Informationen: \ 
 E: An welche Personen hat er die Nachricht geschickt\
 F: Er meinte alle Notizen sind in der vergangenheit, aber nicht genau an welchem Tag
 
