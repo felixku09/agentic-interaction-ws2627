@@ -8,7 +8,7 @@ import time
 import uuid
 import math
 from openai import OpenAI, RateLimitError, BadRequestError
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
@@ -17,7 +17,6 @@ from dotenv import load_dotenv
 
 # The folder containing README.md and .env is one level above agent/.
 ROOT = Path(__file__).resolve().parent.parent
-
 
 # Tool description: the language model sees this, NOT our Python function itself.
 CALENDAR_TOOL = {
@@ -38,6 +37,80 @@ CALENDAR_TOOL = {
                 }
             },
             "required": ["date"],
+        },
+    },
+}
+
+WEATHER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": (
+            "Retrieve weather forecast data for one city and one date "
+            "from the mock weather API. Use this tool for questions "
+            "about weather, rain, temperature or umbrellas. "
+            "Use city slugs such as 'ulm' or 'muenchen', "
+            "not 'munich' or 'München'. "
+            "Missing data does not mean good weather."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "city": {
+                    "type": "string",
+                    "description": (
+                        "City slug from index.json, "
+                        "e.g. 'ulm' or 'muenchen'."
+                    ),
+                },
+                "date": {
+                    "type": "string",
+                    "description": (
+                        "Date in YYYY-MM-DD format, "
+                        "e.g. '2026-10-29'."
+                    ),
+                },
+            },
+            "required": ["city", "date"],
+        },
+    },
+}
+
+TRANSIT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_transit",
+        "description": (
+            "Retrieve train connections between two cities "
+            "for a specific date from the mock transit API. "
+            "Use this tool for questions about trains, "
+            "departures, arrivals and travel connections. "
+            "Use city slugs such as 'ulm' and 'muenchen'. "
+            "Do not invent connections when no data is available."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "from_city": {
+                    "type": "string",
+                    "description": (
+                        "Departure city slug, e.g. 'ulm'."
+                    ),
+                },
+                "to_city": {
+                    "type": "string",
+                    "description": (
+                        "Destination city slug, e.g. 'muenchen'."
+                    ),
+                },
+                "date": {
+                    "type": "string",
+                    "description": (
+                        "Travel date in YYYY-MM-DD format."
+                    ),
+                },
+            },
+            "required": ["from_city", "to_city", "date"],
         },
     },
 }
@@ -65,7 +138,7 @@ def log_event(log_path: Path, run_id: str, event: str, model: str,
     with log_path.open("a", encoding="utf-8") as log_file:
         log_file.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-#Parameter date and adress of the mock calendar are passed to the function,
+# Parameter date and adress of the mock calendar are passed to the function,
 # which returns a dictionary with the calendar data for that date.
 # If the date is invalid or there is no data for that date, an appropriate error message is returned.
 def get_calendar(date: str, base_url: str) -> dict:
@@ -97,15 +170,133 @@ def get_calendar(date: str, base_url: str) -> dict:
             "error": f"Could not read the calendar: {type(exc).__name__}",
         }
 
+def get_weather(city: str, date: str, base_url: str) -> dict:
+    """Retrieve weather data for one city and date."""
+
+    # 1. Validate the date format
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        return {
+            "city": city,
+            "date": date,
+            "status": "error",
+            "error": "Use YYYY-MM-DD."
+        }
+
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        return {
+            "city": city,
+            "date": date,
+            "status": "error",
+            "error": "Invalid date."
+        }
+
+    # 2. Construct the API URL
+    url = f"{base_url.rstrip('/')}/weather/{city}/{date}.json"
+
+    # 3. Retrieve weather data
+    try:
+        with urlopen(url, timeout=15) as response:
+            return json.load(response)
+
+    # 4. Handle missing data
+    except HTTPError as exc:
+        if exc.code == 404:
+            return {
+                "city": city,
+                "date": date,
+                "status": "no_data",
+                "message": "No weather data available."
+            }
+
+        return {
+            "city": city,
+            "date": date,
+            "status": "error",
+            "error": f"HTTP {exc.code}"
+        }
+
+    # 5. Handle connection and data errors
+    except (URLError, TimeoutError, ValueError, OSError) as exc:
+        return {
+            "city": city,
+            "date": date,
+            "status": "error",
+            "error": f"Could not read weather: {type(exc).__name__}"
+        }
+
+def get_transit(from_city: str, to_city: str, date: str, base_url: str) -> dict:
+    """Retrieve train connections between two cities for one date."""
+
+    # 1. Validate date
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        return {
+            "status": "error",
+            "error": "Use YYYY-MM-DD."
+        }
+
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        return {
+            "status": "error",
+            "error": "Invalid date."
+        }
+
+    # 2. Validate city slugs
+    for city in (from_city, to_city):
+        if not re.fullmatch(r"[a-z0-9_-]+", city):
+            return {
+                "status": "error",
+                "error": "Invalid city slug."
+            }
+
+    # 3. Construct URL
+    url = (
+        f"{base_url.rstrip('/')}/transit/"
+        f"{from_city}/{to_city}/{date}.json"
+    )
+
+    # 4. Retrieve transit data
+    try:
+        with urlopen(url, timeout=15) as response:
+            return json.load(response)
+
+    # 5. Handle missing data
+    except HTTPError as exc:
+        if exc.code == 404:
+            return {
+                "from": from_city,
+                "to": to_city,
+                "date": date,
+                "status": "no_data",
+                "message": "No transit data available."
+            }
+
+        return {
+            "status": "error",
+            "error": f"HTTP {exc.code}"
+        }
+
+    # 6. Handle connection and data errors
+    except (URLError, TimeoutError, ValueError, OSError) as exc:
+        return {
+            "status": "error",
+            "error": f"Could not read transit: {type(exc).__name__}"
+        }
+
+
 def call_model_with_rate_limit(
     client, model, messages, tools, tool_choice, log_path, run_id
 ):
     """Call the model and wait if a rate limit is reached."""
-
+    #Spielraum für Agenten bei vorübergehenden Fehlern im Modellaufruf, z.B. Rate-Limit oder ungültiger Tool-Aufruf.
+    #verhindert unbegrenzte Wiederholungen und Wartezeiten.
     max_retries = 6
-    max_total_wait = 300  # Maximum waiting time: 5 minutes
+    max_total_wait = 300  #5min
     started = time.monotonic()
-
+    
     for attempt in range(max_retries + 1):
         try:
             # Request the response including HTTP headers
@@ -204,7 +395,12 @@ def call_model_with_rate_limit(
                 file=sys.stderr,
             )
 
-
+        #Ein Sprachmodell arbeitet nicht wie eine gewöhnliche Funktion, 
+        #die bei identischer Eingabe immer garantiert dieselbe Ausgabe erzeugt.
+        #Falsches Format der Tool Argumente(ungültiger Tool-Aufruf) get_calendar<|channel|>commentary → Fehler
+        #Ein erneuter Modellaufruf kann einen gültigen Tool-Aufruf erzeugen,
+        #obwohl der vorherige Versuch fehlgeschlagen ist.
+        
         except BadRequestError as exc:
             error_message = str(exc).lower()
 
@@ -262,36 +458,82 @@ def run_agent(question: str, log_path: Path, run_id: str, model: str) -> str:
         max_retries=0,
     )
 
-    # 2. Prepare messages
-    messages = [
-    {
-        "role": "system",
-        "content": (
-            "You are a calendar assistant. The mock calendar covers "
-            "2026-10-26 through 2026-11-08. "
-            "For calendar questions, use the get_calendar tool. "
-            "Convert dates into YYYY-MM-DD. "
-            "If the user asks about multiple dates, check every "
-            "requested date before giving your final answer. "
-            "Never invent appointments. "
-            "Distinguish days without events from days without data. "
-            "If one tool call fails, continue checking other dates "
-            "and explain which information was unavailable. "
-            "Respond in the language of the user. "
-            "Output plain text suitable for a terminal. "
-            "Do not use Markdown tables, HTML, <br>, or bold markers like **. "
-            "Use short headings and bullet points with one line per appointment."
-            "For every date explicitly requested by the user, "
-            "call get_calendar, including dates outside the known "
-            "calendar range. Do not assume missing calendar data "
-            "without checking the tool. "
-            "Only give the final answer after all requested dates "
-            "have been checked."
-        ),
-    },
-    {"role": "user", "content": question},
-    ]   
+    # Current date based on the computer's local timezone
+    today = datetime.now().astimezone().date()
 
+    #Der System-Prompt legt Rolle, Regeln und Ausgabeformat fest.
+    # 2. Prepare messages
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                # Role and environment
+                "You are a calendar, weather and transit assistant. "
+                "The mock data covers 2026-10-26 through 2026-11-08. "
+
+                # Current date and relative dates
+                f"Today's date is {today.isoformat()}. "
+                "This date uses the computer's local timezone. "
+                "Resolve relative expressions such as 'today', "
+                "'tomorrow', 'yesterday', 'heute', 'morgen' and "
+                "'gestern' using today's date. "
+                "Always convert dates to YYYY-MM-DD before calling tools. "
+                "Never assume that today is within the mock data period. "
+
+                # Tool selection
+                "Use get_calendar for questions about appointments "
+                "and calendar events. "
+                "Use get_weather for questions about weather, "
+                "temperature, rain and umbrellas. "
+                "Use get_transit for questions about train connections, "
+                "departures, arrivals and travel routes. "
+
+                # City names
+                "Use city slugs from the mock data, such as "
+                "'ulm' and 'muenchen'. "
+                "Convert city names such as Munich or München "
+                "to 'muenchen'. "
+
+                # Multiple tools and dates
+                "If a question requires multiple tools, call all "
+                "necessary tools before giving the final answer. "
+                "For every explicitly requested date, check the "
+                "relevant tools for that date. "
+                "Do not assume missing data without checking the tool. "
+                "Only provide a factual final answer after all "
+                "necessary tool calls have been completed. "
+
+                # Missing information
+                "If a required city, departure location, "
+                "destination or date cannot be determined, "
+                "ask the user instead of guessing. "
+
+                # Error handling and reliability
+                "Never invent appointments, weather information "
+                "or train connections. "
+                "Distinguish days without events from days "
+                "without data. "
+                "If a tool returns status 'no_data', explain "
+                "that no data is available. "
+                "If a tool returns status 'error', explain "
+                "that the information could not be retrieved. "
+                "If one tool call fails, continue with other "
+                "independent tool calls whenever possible. "
+                "Do not interpret missing weather data as no rain "
+                "or missing transit data as no trains. "
+
+                # Output format
+                "Respond in the language of the user. "
+                "Output plain text suitable for a terminal. "
+                "Do not use Markdown tables, HTML, <br>, "
+                "or bold markers like **. "
+                "Use short headings and bullet points. "
+            ),
+        },
+        {"role": "user", "content": question},
+    ]
+  
     log_event(
         log_path, run_id, "user_task", model,
         args={"question": question}
@@ -301,24 +543,23 @@ def run_agent(question: str, log_path: Path, run_id: str, model: str) -> str:
     for step in range(1, max_steps + 1):
 
         start = time.perf_counter()
-
+       
         response = call_model_with_rate_limit(
             client=client,
             model=model,
             messages=messages,
-            tools=[CALENDAR_TOOL],
-            tool_choice="required" if step == 1 else "auto",
+            tools=[CALENDAR_TOOL, WEATHER_TOOL, TRANSIT_TOOL],
+            tool_choice="auto",
             log_path=log_path,
             run_id=run_id,
         )
 
-        model_duration_ms = (time.perf_counter() - start) * 1000
+        model_duration_ms = (time.perf_counter() - start) * 1000    #Dauer des Modellaufrufs in Millisekunden
 
-        assistant_message = response.choices[0].message
-        messages.append(assistant_message)
+        assistant_message = response.choices[0].message             #Modellantwort
+        messages.append(assistant_message)                          #Modellantwort wird dem Gesprächsverlauf hinzugefügt
 
-        calls = assistant_message.tool_calls or []
-
+        calls = assistant_message.tool_calls or []                  #Prüfe on das Modell Tools verwenden möchte
         # 4. No tool calls: the agent has finished
         if not calls:
             answer = assistant_message.content
@@ -357,31 +598,59 @@ def run_agent(question: str, log_path: Path, run_id: str, model: str) -> str:
             start_tool = time.perf_counter()
 
             # 6. Handle errors without stopping the entire agent
+            
             try:
-                if tool_name != "get_calendar":
-                    raise ValueError("Unknown tool: " + tool_name)
-
                 if not isinstance(arguments, dict):
                     raise ValueError("Invalid tool arguments.")
 
                 date = arguments.get("date")
 
-                if not isinstance(date, str):
+                if not isinstance(date, str) or not date:
                     raise ValueError("The date must be a string.")
 
-                result = get_calendar(
-                    date,
-                    os.environ["DATA_BASE_URL"]
-                )
+                base_url = os.environ["DATA_BASE_URL"]
+
+                # Calendar tool
+                if tool_name == "get_calendar":
+                    result = get_calendar(date, base_url)
+
+                # Weather tool
+                elif tool_name == "get_weather":
+                    city = arguments.get("city")
+
+                    if not isinstance(city, str) or not city:
+                        raise ValueError("Invalid city.")
+
+                    result = get_weather(city, date, base_url)
+
+                # Transit tool
+                elif tool_name == "get_transit":
+                    from_city = arguments.get("from_city")
+                    to_city = arguments.get("to_city")
+
+                    if not isinstance(from_city, str) or not from_city:
+                        raise ValueError("Invalid departure city.")
+
+                    if not isinstance(to_city, str) or not to_city:
+                        raise ValueError("Invalid destination city.")
+
+                    result = get_transit(
+                        from_city, to_city, date, base_url
+                    )
+
+                # Unknown tool
+                else:
+                    raise ValueError("Unknown tool: " + tool_name)
 
                 if not isinstance(result, dict):
-                    raise ValueError("Invalid calendar response.")
+                    raise ValueError("Invalid tool response.")
 
             except Exception as exc:
                 result = {
                     "status": "error",
                     "error": str(exc),
                 }
+
 
             tool_duration_ms = (time.perf_counter() - start_tool) * 1000
 
