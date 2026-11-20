@@ -115,6 +115,35 @@ TRANSIT_TOOL = {
     },
 }
 
+ASK_USER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "ask_user",
+        "description": (
+            "Ask the user a clarification question when essential "
+            "information is missing to complete the original task. "
+            "For example, ask for a missing destination, departure "
+            "city or date. Do not guess missing information. "
+            "Only ask when necessary. After receiving the answer, "
+            "continue processing the original user request."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "The clarification question to display to "
+                        "the user, e.g. 'Where do you want to go?'"
+                    ),
+                }
+            },
+            "required": ["question"],
+        },
+    },
+}
+
+
 # current time in ISO-8601 format with UTC offset, e.g. 2026-10-29T12:34:56.789012+00:00
 def now_iso() -> str:
     """An ISO-8601 timestamp including its UTC offset."""
@@ -504,10 +533,17 @@ def run_agent(question: str, log_path: Path, run_id: str, model: str) -> str:
                 "Only provide a factual final answer after all "
                 "necessary tool calls have been completed. "
 
-                # Missing information
-                "If a required city, departure location, "
-                "destination or date cannot be determined, "
-                "ask the user instead of guessing. "
+                # Clarification questions
+                "If essential information such as a city, destination "
+                "or date is missing and cannot be inferred, "
+                "call the ask_user tool with a short question. "
+                "Do not ask clarification questions in ordinary "
+                "assistant text. "
+                "After receiving the answer from ask_user, "
+                "combine it with the original user request "
+                "and continue completing the entire task. "
+                "Do not end the agent run after a clarification "
+                "unless the original task is completed. "
 
                 # Error handling and reliability
                 "Never invent appointments, weather information "
@@ -548,7 +584,7 @@ def run_agent(question: str, log_path: Path, run_id: str, model: str) -> str:
             client=client,
             model=model,
             messages=messages,
-            tools=[CALENDAR_TOOL, WEATHER_TOOL, TRANSIT_TOOL],
+            tools=[CALENDAR_TOOL, WEATHER_TOOL, TRANSIT_TOOL, ASK_USER_TOOL],
             tool_choice="auto",
             log_path=log_path,
             run_id=run_id,
@@ -597,50 +633,74 @@ def run_agent(question: str, log_path: Path, run_id: str, model: str) -> str:
 
             start_tool = time.perf_counter()
 
-            # 6. Handle errors without stopping the entire agent
-            
+            # 6. Handle errors without stopping the entire agent                  
             try:
                 if not isinstance(arguments, dict):
                     raise ValueError("Invalid tool arguments.")
 
-                date = arguments.get("date")
-
-                if not isinstance(date, str) or not date:
-                    raise ValueError("The date must be a string.")
-
                 base_url = os.environ["DATA_BASE_URL"]
 
-                # Calendar tool
-                if tool_name == "get_calendar":
-                    result = get_calendar(date, base_url)
+                # Ask the user for missing information
+                if tool_name == "ask_user":
+                    clarification = arguments.get("question")
 
-                # Weather tool
-                elif tool_name == "get_weather":
-                    city = arguments.get("city")
+                    if not isinstance(clarification, str) or not clarification.strip():
+                        raise ValueError("Invalid clarification question.")
 
-                    if not isinstance(city, str) or not city:
-                        raise ValueError("Invalid city.")
+                    # Show question and read the user's answer
+                    print(f"\nAgent: {clarification}", file=sys.stderr)
+                    print("Du: ", end="", flush=True, file=sys.stderr)
 
-                    result = get_weather(city, date, base_url)
+                    try:
+                        user_answer = input().strip()
+                    except EOFError:
+                        user_answer = ""
 
-                # Transit tool
-                elif tool_name == "get_transit":
-                    from_city = arguments.get("from_city")
-                    to_city = arguments.get("to_city")
+                    if user_answer:
+                        result = {"answer": user_answer}
+                    else:
+                        result = {
+                            "status": "error",
+                            "error": "No user answer provided. Ask again."
+                        }
 
-                    if not isinstance(from_city, str) or not from_city:
-                        raise ValueError("Invalid departure city.")
-
-                    if not isinstance(to_city, str) or not to_city:
-                        raise ValueError("Invalid destination city.")
-
-                    result = get_transit(
-                        from_city, to_city, date, base_url
-                    )
-
-                # Unknown tool
+                # All data tools require a date
                 else:
-                    raise ValueError("Unknown tool: " + tool_name)
+                    date = arguments.get("date")
+
+                    if not isinstance(date, str) or not date:
+                        raise ValueError("The date must be a string.")
+
+                    # Calendar tool
+                    if tool_name == "get_calendar":
+                        result = get_calendar(date, base_url)
+
+                    # Weather tool
+                    elif tool_name == "get_weather":
+                        city = arguments.get("city")
+
+                        if not isinstance(city, str) or not city:
+                            raise ValueError("Invalid city.")
+
+                        result = get_weather(city, date, base_url)
+
+                    # Transit tool
+                    elif tool_name == "get_transit":
+                        from_city = arguments.get("from_city")
+                        to_city = arguments.get("to_city")
+
+                        if not isinstance(from_city, str) or not from_city:
+                            raise ValueError("Invalid departure city.")
+
+                        if not isinstance(to_city, str) or not to_city:
+                            raise ValueError("Invalid destination city.")
+
+                        result = get_transit(
+                            from_city, to_city, date, base_url
+                        )
+
+                    else:
+                        raise ValueError("Unknown tool: " + tool_name)
 
                 if not isinstance(result, dict):
                     raise ValueError("Invalid tool response.")
@@ -650,6 +710,7 @@ def run_agent(question: str, log_path: Path, run_id: str, model: str) -> str:
                     "status": "error",
                     "error": str(exc),
                 }
+
 
 
             tool_duration_ms = (time.perf_counter() - start_tool) * 1000
