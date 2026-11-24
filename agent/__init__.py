@@ -1,1 +1,1 @@
-"""Exercise 01: calendar assistant."""
+"""Calendar, weather, and transit agent package."""
